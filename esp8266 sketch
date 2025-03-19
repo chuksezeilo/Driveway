@@ -1,0 +1,154 @@
+//This sketch code was put together using chatgpt and claude.ai
+#include <Adafruit_NeoPixel.h>
+#include <RCSwitch.h>
+ 
+#define LED_PIN        2    // GPIO2 (D4) - LED data pin
+#define NUM_LEDS       11   // Number of LEDs
+#define SENSOR_POWER   12   // GPIO12 (D6) - Power ON/OFF control
+#define RF_RECEIVE_PIN 14   // GPIO14 (D5) - RF receiver pin
+#define INTERNAL_LED   16   // Internal LED (GPIO16 on most ESP8266 boards)
+#define DOOR_FULLY_OPEN_SENSOR 13  // GPIO13 (D7) - Detects when door is fully open
+
+
+#define CHASE_INTERVAL 50   // Chase speed (milliseconds)
+#define FLIP_FLOP_INTERVAL 500  // Flip-flop speed (milliseconds)
+ 
+Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
+RCSwitch mySwitch = RCSwitch();
+ 
+bool directionState = true;   // Default: forward
+bool lastDetectedSignal = false; // Stores last RF signal state
+bool previousPowerState = false; // Tracks last power state
+bool doorFullyOpen = false; // Tracks door open state
+bool flipFlopState = false; // Tracks LED flip state
+ 
+unsigned long previousChaseMillis = 0;  // Store last chase update time
+unsigned long previousFlipFlopMillis = 0; // Store last flip-flop update time
+unsigned long rfLedTurnOffTime = 0;     // Time to turn off RF indicator LED
+unsigned long RF_LED_DURATION = 1000;   // Time to keep internal LED on (ms)
+int position = 0;  // Current LED position
+ 
+void setup() {
+  Serial.begin(115200);
+ 
+  pinMode(SENSOR_POWER, INPUT_PULLUP);
+  pinMode(INTERNAL_LED, OUTPUT);
+  digitalWrite(INTERNAL_LED, HIGH);  // Most ESP8266 boards use inverted logic (HIGH = off, LOW = on)
+  pinMode(DOOR_FULLY_OPEN_SENSOR, INPUT_PULLUP);
+  mySwitch.enableReceive(RF_RECEIVE_PIN); // Enable RF receiver on D5
+  strip.begin();
+  strip.show();  // Turn off all LEDs
+ 
+  // Quick test of internal LED
+  digitalWrite(INTERNAL_LED, LOW);   // Turn on
+  delay(500);
+  digitalWrite(INTERNAL_LED, HIGH);  // Turn off
+ 
+ 
+  Serial.println("System initialized");
+}
+ 
+void loop() {
+  unsigned long currentMillis = millis();
+ 
+  // Check for RF Signal using non-blocking approach
+  if (mySwitch.available()) {
+    long receivedCode = mySwitch.getReceivedValue();
+    Serial.print("Received code: ");
+    Serial.println(receivedCode);
+   
+    if (receivedCode > 1000) {  
+      lastDetectedSignal = true;  // Store RF signal state
+      // Turn on internal LED to indicate RF signal
+      digitalWrite(INTERNAL_LED, LOW);  // LOW turns LED on for most ESP8266 boards
+      rfLedTurnOffTime = currentMillis + RF_LED_DURATION; // Schedule LED turn off
+      Serial.println("Valid signal detected - LED ON");
+    }
+    mySwitch.resetAvailable();
+  }
+ 
+// Turn off internal LED after duration expires
+  if (rfLedTurnOffTime > 0 && currentMillis >= rfLedTurnOffTime) {
+    digitalWrite(INTERNAL_LED, HIGH); // HIGH turns LED off
+    rfLedTurnOffTime = 0; // Reset timer
+    Serial.println("RF indicator LED OFF");
+  }
+  // Read power state
+  bool powerState = digitalRead(SENSOR_POWER);
+  bool doorState = digitalRead(DOOR_FULLY_OPEN_SENSOR) == LOW; // Active LOW sensor
+ 
+  // Power state transitions
+  if (powerState != previousPowerState) {
+    if (powerState == LOW) {
+      // Power turned OFF
+      Serial.println("Power OFF - Resetting to default");
+      directionState = true; // Reset to forward
+      lastDetectedSignal = false;
+      doorFullyOpen = false;
+      turnOffLeds();
+    } else {
+      // Power turned ON
+      Serial.println("Power ON");
+      if (lastDetectedSignal) {
+        Serial.println("RF signal was detected - Reversing direction");
+        directionState = false; // Reverse direction
+        lastDetectedSignal = false; // Reset after use
+      } else {
+        Serial.println("No RF signal detected - Forward direction");
+      }
+    }
+    previousPowerState = powerState;
+  }
+ 
+  // Update door state
+  if (doorState != doorFullyOpen) {
+    doorFullyOpen = doorState;
+    Serial.println(doorFullyOpen ? "Door fully open - Switching to flip-flop mode" : "Door no longer fully open - Returning to chase mode");
+  }
+ 
+  // Run the correct LED effect
+  if (powerState == HIGH) {
+    if (doorFullyOpen) {
+      // Flip-Flop effect when door is fully open
+      if (currentMillis - previousFlipFlopMillis >= FLIP_FLOP_INTERVAL) {
+        previousFlipFlopMillis = currentMillis;
+        runFlipFlop();
+      }
+    } else {
+      // Chase effect otherwise
+      if (currentMillis - previousChaseMillis >= CHASE_INTERVAL) {
+        previousChaseMillis = currentMillis;
+        runChase(directionState);
+      }
+    }
+  }
+}
+ 
+void runChase(bool forward) {
+  strip.clear();
+  strip.setPixelColor(position, strip.Color(255, 255, 255)); // White
+  strip.show();
+ 
+  position += forward ? 1 : -1;
+  if (position >= NUM_LEDS) position = 0;
+  if (position < 0) position = NUM_LEDS - 1;
+}
+ 
+void runFlipFlop() {
+  strip.clear();
+  flipFlopState = !flipFlopState;
+ 
+  for (int i = flipFlopState ? 0 : 1; i < NUM_LEDS; i += 2) {
+    strip.setPixelColor(i, strip.Color(255, 0, 0)); // White
+  }
+ 
+  strip.show();
+}
+ 
+void turnOffLeds() {
+  strip.clear();
+  strip.show();
+}
+ 
+ 
+
